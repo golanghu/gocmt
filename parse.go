@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/parser"
+	"go/printer"
 	"go/token"
 	"strings"
 )
@@ -25,7 +26,8 @@ func parseFile(fset *token.FileSet, filePath, template string) (af *ast.File, mo
 		}()
 	}
 
-	commentTemplate := commentBase + template
+	//commentTemplate := commentBase + template
+	commentTemplate := template
 
 	originalCommentSign := ""
 	for _, c := range af.Comments {
@@ -44,48 +46,48 @@ func parseFile(fset *token.FileSet, filePath, template string) (af *ast.File, mo
 			addFuncDeclComment(typ, commentTemplate)
 			cmap[typ] = appendCommentGroup(cmap[typ], typ.Doc)
 
-		case *ast.DeclStmt:
-			skipped[typ.Decl] = true
+			//case *ast.DeclStmt:
+			//	skipped[typ.Decl] = true
 
-		case *ast.GenDecl:
-			switch typ.Tok {
-			case token.CONST, token.VAR:
-				if !(typ.Lparen == token.NoPos && typ.Rparen == token.NoPos) {
-					// if there's a () and parenComment is true, add comment for each sub entry
-					if *parenComment {
-						for _, spec := range typ.Specs {
-							vs := spec.(*ast.ValueSpec)
-							if !vs.Names[0].IsExported() {
-								continue
-							}
-							addParenValueSpecComment(vs, commentTemplate)
-							cmap[vs] = appendCommentGroup(cmap[vs], vs.Doc)
-						}
-						return true
-					}
-				}
-
-				// empty var block
-				if len(typ.Specs) == 0 {
-					return true
-				}
-
-				vs := typ.Specs[0].(*ast.ValueSpec)
-				if skipped[typ] || !vs.Names[0].IsExported() {
-					return true
-				}
-				addValueSpecComment(typ, vs, commentTemplate)
-
-			case token.TYPE:
-				ts := typ.Specs[0].(*ast.TypeSpec)
-				if skipped[typ] || !ts.Name.IsExported() {
-					return true
-				}
-				addTypeSpecComment(typ, ts, commentTemplate)
-			default:
-				return true
-			}
-			cmap[typ] = appendCommentGroup(cmap[typ], typ.Doc)
+			//case *ast.GenDecl:
+			//	switch typ.Tok {
+			//	case token.CONST, token.VAR:
+			//		if !(typ.Lparen == token.NoPos && typ.Rparen == token.NoPos) {
+			//			// if there's a () and parenComment is true, add comment for each sub entry
+			//			if *parenComment {
+			//				for _, spec := range typ.Specs {
+			//					vs := spec.(*ast.ValueSpec)
+			//					if !vs.Names[0].IsExported() {
+			//						continue
+			//					}
+			//					addParenValueSpecComment(vs, commentTemplate)
+			//					cmap[vs] = appendCommentGroup(cmap[vs], vs.Doc)
+			//				}
+			//				return true
+			//			}
+			//		}
+			//
+			//		// empty var block
+			//		if len(typ.Specs) == 0 {
+			//			return true
+			//		}
+			//
+			//		vs := typ.Specs[0].(*ast.ValueSpec)
+			//		if skipped[typ] || !vs.Names[0].IsExported() {
+			//			return true
+			//		}
+			//		addValueSpecComment(typ, vs, commentTemplate)
+			//
+			//	case token.TYPE:
+			//		ts := typ.Specs[0].(*ast.TypeSpec)
+			//		if skipped[typ] || !ts.Name.IsExported() {
+			//			return true
+			//		}
+			//		addTypeSpecComment(typ, ts, commentTemplate)
+			//	default:
+			//		return true
+			//	}
+			//	cmap[typ] = appendCommentGroup(cmap[typ], typ.Doc)
 		}
 		return true
 	})
@@ -102,16 +104,69 @@ func parseFile(fset *token.FileSet, filePath, template string) (af *ast.File, mo
 	return
 }
 
+// Helper function to get string representation of an ast.Expr safely.
+func getTypeString(expr ast.Expr) string {
+	if expr == nil {
+		return "unknown"
+	}
+	var sb strings.Builder
+	if err := printer.Fprint(&sb, token.NewFileSet(), expr); err != nil {
+		return "unknown"
+	}
+	return sb.String()
+}
+
 func addFuncDeclComment(fd *ast.FuncDecl, commentTemplate string) {
 	if fd.Doc == nil || strings.TrimSpace(fd.Doc.Text()) == fd.Name.Name {
-		text := fmt.Sprintf(commentTemplate, fd.Name)
+		// 获取参数类型的描述
+		paramDescriptions := []string{}
+		if fd.Type.Params != nil { // 确保参数不为nil
+			for _, param := range fd.Type.Params.List {
+				paramType := getTypeString(param.Type) // 获取参数类型的字符串表示
+				for _, name := range param.Names {
+					paramDescriptions = append(paramDescriptions, fmt.Sprintf("%s %s", name.Name, paramType))
+				}
+			}
+		}
+		paramStr := strings.Join(paramDescriptions, ", ")
+
+		// 获取返回值类型的描述
+		returnDescriptions := []string{}
+		if fd.Type.Results != nil { // 确保返回值不为nil
+			for _, result := range fd.Type.Results.List {
+				returnType := getTypeString(result.Type) // 获取返回值类型的字符串表示
+				// 判断是否有名称
+				if len(result.Names) > 0 {
+					for _, name := range result.Names {
+						returnDescriptions = append(returnDescriptions, fmt.Sprintf("%s %s", name.Name, returnType))
+					}
+				} else {
+					// 如果没有被命名，则只返回类型
+					returnDescriptions = append(returnDescriptions, returnType)
+				}
+			}
+		}
+		returnStr := strings.Join(returnDescriptions, ", ")
+
+		// 创建注释文本
+		commentTemplate = strings.ReplaceAll(commentTemplate, "\\n", "\n")
+		newText := fmt.Sprintf(commentTemplate, fd.Name.Name, paramStr, returnStr)
+
+		// 设置注释位置
 		pos := fd.Pos() - token.Pos(1)
 		if fd.Doc != nil {
 			pos = fd.Doc.Pos()
+			// 将新生成的注释添加到原注释后面，并保留原注释
+			originalText := strings.TrimSpace(fd.Doc.Text())
+			// 确保不会重复空格或换行
+			if originalText != "" {
+				newText = fmt.Sprintf("%s\n%s", originalText, newText)
+			}
 		}
-		fd.Doc = &ast.CommentGroup{List: []*ast.Comment{{Slash: pos, Text: text}}}
+		fd.Doc = &ast.CommentGroup{List: []*ast.Comment{{Slash: pos, Text: newText}}}
 		return
 	}
+
 	if fd.Doc != nil && isLineComment(fd.Doc) && !hasCommentPrefix(fd.Doc, fd.Name.Name) {
 		modifyComment(fd.Doc, fd.Name.Name)
 		return
@@ -168,7 +223,9 @@ func addTypeSpecComment(gd *ast.GenDecl, ts *ast.TypeSpec, commentTemplate strin
 }
 
 func modifyComment(comment *ast.CommentGroup, prefix string) {
-	commentTemplate := commentBase + *template
+	//commentTemplate := commentBase + *template
+	commentTemplate := *template
+
 	first := comment.List[0].Text
 	if strings.HasPrefix(first, "//") && !strings.HasPrefix(first, "// ") {
 		text := fmt.Sprintf(commentTemplate, prefix)
